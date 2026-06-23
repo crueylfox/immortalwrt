@@ -1,0 +1,124 @@
+name: Build ImmortalWrt for JDCloud RE-SS-01
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: "ImmortalWrt source branch"
+        required: true
+        default: "master"
+
+jobs:
+  build:
+    name: Build jdcloud_re-ss-01
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Show runner info
+        run: |
+          echo "CPU:"
+          nproc
+          echo "Memory:"
+          free -h
+          echo "Disk:"
+          df -h
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /usr/share/swift || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune -af || true
+          sudo apt-get clean
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt update -y
+          sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint \
+            binutils bison build-essential bzip2 ccache clang cmake cpio curl \
+            device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib \
+            g++-multilib git gnutls-dev gperf haveged help2man intltool \
+            lib32gcc-s1 libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev \
+            libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev \
+            libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm \
+            lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf \
+            python3 python3-pip python3-ply python3-docutils python3-pyelftools \
+            qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo \
+            uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
+
+      - name: Clone ImmortalWrt
+        run: |
+          git clone -b "${{ inputs.source_branch }}" --single-branch --filter=blob:none https://github.com/immortalwrt/immortalwrt openwrt
+
+      - name: Check JDCloud RE-SS-01 profile exists
+        working-directory: openwrt
+        run: |
+          grep -R "define Device/jdcloud_re-ss-01" target/linux/qualcommax/image/ipq60xx.mk
+          grep -R "TARGET_DEVICES += jdcloud_re-ss-01" target/linux/qualcommax/image/ipq60xx.mk
+
+      - name: Update feeds
+        working-directory: openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Generate config
+        working-directory: openwrt
+        run: |
+          cat > .config <<'EOF'
+          CONFIG_TARGET_qualcommax=y
+          CONFIG_TARGET_qualcommax_ipq60xx=y
+          CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y
+
+          CONFIG_TARGET_ROOTFS_INITRAMFS=y
+
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-ssl-openssl=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+
+          CONFIG_PACKAGE_bash=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_wget-ssl=y
+          CONFIG_PACKAGE_ca-bundle=y
+          CONFIG_PACKAGE_nano=y
+          CONFIG_PACKAGE_htop=y
+          CONFIG_PACKAGE_lrzsz=y
+          EOF
+
+          make defconfig
+
+          echo "===== selected config ====="
+          grep -E 'CONFIG_TARGET_qualcommax|jdcloud_re-ss-01|ROOTFS_INITRAMFS|CONFIG_PACKAGE_luci' .config
+
+          grep -q "CONFIG_TARGET_qualcommax_ipq60xx_DEVICE_jdcloud_re-ss-01=y" .config
+
+      - name: Download source packages
+        working-directory: openwrt
+        run: |
+          make download -j$(nproc) V=s
+          find dl -size -1024c -exec ls -lh {} \; || true
+
+      - name: Compile firmware
+        working-directory: openwrt
+        run: |
+          make -j$(nproc) V=s || make -j1 V=s
+
+      - name: Collect firmware
+        run: |
+          mkdir -p artifact
+          cp -a openwrt/bin/targets/qualcommax/ipq60xx/*jdcloud_re-ss-01* artifact/ || true
+          find artifact -type f -maxdepth 1 -exec ls -lh {} \;
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: immortalwrt-jdcloud-re-ss-01
+          path: artifact/*
+          retention-days: 7
